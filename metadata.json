@@ -1,0 +1,21 @@
+{
+  "name": "zebrad_module",
+  "display_name": "Zcash Node (local)",
+  "version": "0.1.0",
+  "type": "core",
+  "interface": "universal",
+  "concurrency": "multi",
+  "category": "wallet",
+  "description": "Runs a Zcash node (Zebra) in-process and serves the wallet its lightwalletd service over Logos IPC: per-network config, start, stop, status, grpc and log tail.",
+  "author": "Logos Core Team",
+  "main": "zebrad_module_plugin",
+  "codegen": { "impl_header": "zebrad_module_impl.h", "impl_class": "ZebradModuleImpl" },
+  "dependencies": [],
+  "include": ["LICENSE-MIT.zebra", "LICENSE-APACHE.zebra"],
+  "capabilities": [],
+  "nix": {
+    "packages": { "build": [], "runtime": ["nlohmann_json"] },
+    "external_libraries": [ { "name": "zebrad_c" } ],
+    "cmake": { "extra_include_dirs": ["lib"] }
+  }
+}
