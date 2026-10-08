@@ -6157,11 +6157,11 @@
         "rust-overlay": "rust-overlay_4"
       },
       "locked": {
-        "lastModified": 1791474237,
-        "narHash": "sha256-u398DBCl1BfgXm5MVJi4C56yjPb1/qE6zhvrfWFf5uU=",
+        "lastModified": 1791498967,
+        "narHash": "sha256-gToikfj0w+mEpQm4r2NuX9r1fCwboNYiDfNbw1dUGnc=",
         "owner": "logos-co",
         "repo": "logos-zebra-nix",
-        "rev": "e5e2325dd07d62791ed44fef0fcaeca50a4ca3e8",
+        "rev": "9b9b796fe802f3ec005a4c1bc432a3c105f306d8",
         "type": "github"
       },
       "original": {
