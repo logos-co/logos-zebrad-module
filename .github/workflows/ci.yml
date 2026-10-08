@@ -1,0 +1,50 @@
+name: CI
+
+# The nix half: the plugin, its package, and libzebrad_c underneath them.
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: nix build
+    # ATTIC_TOKEN_PUBLIC only exists in the public-cache environment.
+    environment: ${{ github.ref == 'refs/heads/master' && 'public-cache' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix and set up the shared cache
+        uses: logos-co/setup-nix-cache-action@v1
+        with:
+          attic-token-ci: ${{ secrets.ATTIC_TOKEN_CI }}
+          attic-token-public: ${{ secrets.ATTIC_TOKEN_PUBLIC }}
+
+      - name: Build plugin and package
+        # `lgx` is the plugin plus packaging; `default` adds the generated consumer API.
+        run: nix build -L .#lgx .#default
+
+      - name: The library and Zebra's licences ship beside the plugin
+        run: |
+          set -euo pipefail
+          nix build -L .#install-portable -o result
+          payload=result/modules/zebrad_module
+          ls -l "$payload"
+          set -- "$payload"/libzebrad_c.*
+          [ -e "$1" ] || { echo "::error::libzebrad_c is not in the payload"; exit 1; }
+          for l in LICENSE-MIT.zebra LICENSE-APACHE.zebra; do
+            [ -s "$payload/$l" ] || { echo "::error::$l is not in the payload"; exit 1; }
+          done
