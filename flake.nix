@@ -13,8 +13,8 @@
   outputs = inputs@{ logos-module-builder, logos-zebra-nix, ... }:
     let
       lib = logos-module-builder.inputs.nixpkgs.lib;
-      # x86_64-windows waits on RocksDB under MinGW (rust-rocksdb#469).
-      systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
+      # x86_64-windows is a cross build from x86_64-linux.
+      systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" "x86_64-windows" ];
       module = logos-module-builder.lib.mkLogosModule {
         src = ./.;
         configFile = ./metadata.json;
@@ -26,9 +26,6 @@
       };
     in
     {
-      packages = lib.genAttrs systems (system: module.packages.${system})
-        # Windows gets the contract only, so dependents (the wallet core, the node app) build
-        # for it; the node itself waits on RocksDB under MinGW.
-        // { x86_64-windows = { inherit (module.packages.x86_64-windows) lidl; }; };
+      packages = lib.genAttrs systems (system: module.packages.${system});
     };
 }
