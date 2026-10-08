@@ -57,3 +57,5 @@ jobs:
     secrets: inherit
     with:
       targets: default
+      # Measured 311 derivations on a cold cache (2026-10-08): zebrad_c.dll's vendored crates.
+      cold-derivation-budget: 375
