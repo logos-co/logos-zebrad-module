@@ -5,6 +5,10 @@
 subprocess is spawned: the node lives and dies with this module. The Zcash wallet reaches it
 over Logos IPC, through `grpc()`, rather than through a port.
 
+Linux and macOS. For Windows the flake publishes only the module's contract
+(`packages.x86_64-windows.lidl`), so modules that depend on it build there; the node itself
+waits on RocksDB under MinGW.
+
 ```bash
 logosctl call zebrad_module configure testnet 'json:{"peersetInitialTargetSize":25}'
 logosctl call zebrad_module start testnet

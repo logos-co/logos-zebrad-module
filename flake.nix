@@ -25,5 +25,10 @@
         };
       };
     in
-    { packages = lib.genAttrs systems (system: module.packages.${system}); };
+    {
+      packages = lib.genAttrs systems (system: module.packages.${system})
+        # Windows gets the contract only, so dependents (the wallet core, the node app) build
+        # for it; the node itself waits on RocksDB under MinGW.
+        // { x86_64-windows = { inherit (module.packages.x86_64-windows) lidl; }; };
+    };
 }
