@@ -1,6 +1,6 @@
 {
   "name": "zebrad_module",
-  "display_name": "Zcash Node (local)",
+  "display_name": "Zcash Zebra Node (local)",
   "version": "0.1.0",
   "type": "core",
   "interface": "universal",
