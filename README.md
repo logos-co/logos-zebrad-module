@@ -2,8 +2,8 @@
 
 `zebrad_module` runs a Zcash full node, [Zebra](https://github.com/ZcashFoundation/zebra),
 **in-process**, through `libzebrad_c` from `logos-zebra-nix`. No executable is bundled and no
-subprocess is spawned: the node lives and dies with this module. The Zcash wallet reaches it
-over Logos IPC, through `grpc()`, rather than through a port.
+subprocess is spawned: the node lives and dies with this module. Other modules reach it over
+Logos IPC, through `grpc()` and `rpc()`, rather than through a port.
 
 Linux (x86_64 and arm64), macOS and Windows. Windows builds are cross builds from x86_64-linux; there the
 plugin ships beside `zebrad_c.dll`, which imports GCC's runtime (libstdc++, libgcc_s,
@@ -27,6 +27,7 @@ logosctl call zebrad_module stop
 | `stop()` | Stops the node and waits for it |
 | `status()` | The library's status plus `syncPercent` and `chainAgeSecs`; never waits on the node |
 | `grpc(path, bodyBase64)` | One call into Zebra's lightwalletd service, as a JSON string |
+| `rpc(method, paramsJson)` | One call into Zebra's JSON-RPC, as a JSON string |
 | `logTail(lines)` | The last lines of the node's log |
 
 Event: `zebradStateChanged(payloadJson)` on every lifecycle transition
@@ -46,10 +47,28 @@ nothing to catch up with.
 (a 5-byte prefix per message) in standard base64. It answers
 `{"ok":true,"status":0,"message":"","body":"<base64 framed response>"}`, where `status` is
 the gRPC status (14, UNAVAILABLE, while the node is not running) and `message` its text,
-or `{"ok":false,"error":"not authorized"}` and the like when the call never reached the node.
+or `{"ok":false,"error":"unloading"}` and the like when the call never reached the node.
 The library ends a call at 120 s (DEADLINE_EXCEEDED) or past 256 MiB of response
 (RESOURCE_EXHAUSTED), and answers UNIMPLEMENTED for `GetMempoolStream`, which stays open until
 the next block; poll `GetMempoolTx` instead.
+
+`rpc(method, paramsJson)` takes a JSON-RPC method and its params as a JSON array or object, or
+`""` for none. It answers `{"result":…,"error":null}` or
+`{"result":null,"error":{"code":…,"message":…}}`, with no port and no cookie: `-9` while the node
+is not running, `-28` while it starts, `-32601` for a method outside the lists below, `-32600`
+for params of another shape, and the node's own errors otherwise.
+
+- Every network: `getinfo`, `getdeprecationinfo`, `getblockchaininfo`, `getaddressbalance`,
+  `sendrawtransaction`, `getblock`, `getblockheader`, `getbestblockhash`,
+  `getbestblockheightandhash`, `getmempoolinfo`, `getrawmempool`, `z_gettreestate`,
+  `z_getsubtreesbyindex`, `getrawtransaction`, `getaddresstxids`, `getaddressutxos`,
+  `getblockcount`, `getblockhash`, `getmininginfo`, `getnetworksolps`, `getnetworkhashps`,
+  `getnetworkinfo`, `getpeerinfo`, `ping`, `validateaddress`, `z_validateaddress`, `z_converttex`,
+  `getstandardfee`, `getblocksubsidy`, `getdifficulty`, `z_listunifiedreceivers`, `gettxout`.
+- Regtest only, judged by the chain the node runs: `generate`, `generatetoaddress`, `submitblock`,
+  `getblocktemplate`, `invalidateblock`, `reconsiderblock`, `addnode`.
+- Never: `stop`, which would signal the whole host process (use this module's `stop()`), and
+  `rpc.discover`.
 
 ## Settings
 
@@ -64,16 +83,23 @@ Per network, persisted in the instance directory (`zebrad.json`).
 | `exposeJsonRpc` | `""` (off) | `host:port` for Zebra's JSON-RPC |
 | `logFilter` | `"info"` | A `tracing` filter for the node's log, `zebrad.log` in the instance directory |
 | `minerAddress` | `""` | Regtest only: where `generate` pays the coinbase |
+| `activationHeights` | `{}` | Regtest only: the height of each network upgrade |
 
 The library installs its log writer once per process, so the log file and `logFilter` of the
 first start in a host process hold until the module is reloaded.
 
-Networks are `mainnet` and `testnet`, plus `regtest` when the instance directory holds
-`regtest.json`, in the wallet core's format:
+Networks are `mainnet` and `testnet`, plus `regtest` once its upgrades are named, by
+`configure("regtest", {"activationHeights":{"nu7":1}})` or by a `regtest.json` in the instance
+directory. Both use the wallet core's format:
 `{"overwinter":1,"sapling":1,"blossom":1,"heartwood":1,"canopy":1,"nu5":1,"nu6":1,"nu6_1":1,"nu6_2":1,"nu6_3":120,"nu7":null}`.
-Its heights become Zebra's `[network.testnet_parameters.activation_heights]` (`NU5`,
-`"NU6.1"`, `"NU6.3"` and so on; `null` leaves an upgrade inactive). The file is read on each
-regtest call, so it can be written after the module loads.
+The heights become Zebra's `[network.testnet_parameters.activation_heights]` (`NU5`,
+`"NU6.1"`, `"NU6.3"` and so on; `null` leaves an upgrade inactive). A non-empty
+`activationHeights` replaces the file. The file is read on each regtest call, so it can be
+written after the module loads.
+
+A regtest node saves each block as it accepts it, so `stop()` keeps every accepted block. On
+mainnet and testnet Zebra saves recent blocks at most every 5 seconds and fetches any it lost
+from its peers after a restart.
 
 ## Why IPC, not a port
 
@@ -81,15 +107,12 @@ Zebra can serve the lightwalletd protocol on a TCP port, but its own documentati
 that this port is plaintext HTTP/2 with no authentication: cookie authentication does not
 apply to it, and a loopback port is reachable by any local process and by web pages loaded
 in a browser on the same machine. So the wallet does not use one. `libzebrad_c` exposes
-Zebra's `CompactTxStreamer` service as an in-memory call, `ZEBRAD_grpc`, and this module
-puts it behind Logos IPC with a caller check.
+Zebra's `CompactTxStreamer` service and JSON-RPC as in-memory calls, `ZEBRAD_grpc` and
+`ZEBRAD_rpc`, and this module puts them behind Logos IPC.
 
-Only `zcash_wallet_core_module` may call `grpc()`. The check reads the caller identity the
-host attaches to each call (`logos::currentCaller()`), not anything the caller sends. For
-tests, a `callers.json` in the instance directory replaces that list:
-`{"modules":["zcash_wallet_core_module"],"allowHost":true}`. `allowHost` admits calls from
-the host itself, such as `logosctl call`. A file that does not parse, or has a key other
-than these two, admits nobody. The file is read when the module loads.
+Any module may call `grpc()` and `rpc()`, and so may the host (`logosctl call`). Both serve
+public chain data and relay signed transactions. Which modules may reach this one is the
+Logos runtime's decision.
 
 ## Exposing the node to other programs
 

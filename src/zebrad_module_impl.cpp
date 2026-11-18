@@ -7,8 +7,6 @@
 #include <filesystem>
 #include <fstream>
 
-#include <logos_caller.h>
-
 #include "zebrad_c.h"
 
 using json = nlohmann::json;
@@ -16,9 +14,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-const char* const kDefaultCaller = "zcash_wallet_core_module";
-
-// regtest.json (the wallet core's keys) -> Zebra's [network.testnet_parameters.activation_heights].
+// The wallet core's upgrade names -> Zebra's [network.testnet_parameters.activation_heights].
 const std::pair<const char*, const char*> kUpgradeKeys[] = {
     {"overwinter", "Overwinter"}, {"sapling", "Sapling"}, {"blossom", "Blossom"},
     {"heartwood", "Heartwood"}, {"canopy", "Canopy"}, {"nu5", "NU5"}, {"nu6", "NU6"},
@@ -34,6 +30,34 @@ std::string takeString(const char* s) {
 StdLogosResult fail(const std::string& why) { return {false, {}, why}; }
 
 std::string refusal(const std::string& why) { return json{{"ok", false}, {"error", why}}.dump(); }
+
+std::string rpcRefusal(int code, const std::string& why) {
+    return json{{"result", nullptr}, {"error", {{"code", code}, {"message", why}}}}.dump();
+}
+
+// Heights by upgrade name, null leaving an upgrade inactive. Returns what is wrong, or "".
+std::string parseHeights(const json& h, const std::string& source,
+                         std::vector<std::pair<std::string, uint32_t>>& out) {
+    out.clear();
+    if (!h.is_object()) return source + " is not a JSON object";
+    for (auto it = h.begin(); it != h.end(); ++it) {
+        const char* zebraKey = nullptr;
+        for (const auto& [ours, theirs] : kUpgradeKeys)
+            if (it.key() == ours) zebraKey = theirs;
+        if (!zebraKey) return source + ": unknown upgrade " + it.key();
+        if (it->is_null()) continue;
+        if (!it->is_number_unsigned() || it->get<uint64_t>() > UINT32_MAX)
+            return source + ": " + it.key() + " must be a height or null";
+        out.emplace_back(zebraKey, it->get<uint32_t>());
+    }
+    return "";
+}
+
+// A setting's value has its default's type; nlohmann types a parsed 25 as unsigned.
+bool sameType(const json& setting, const json& v) {
+    if (setting.is_object()) return v.is_object();
+    return setting.is_number() ? v.is_number_integer() : v.is_string();
+}
 
 void appendLine(const std::string& path, const std::string& line) {
     std::ofstream f(path, std::ios::app);
@@ -130,61 +154,29 @@ void ZebradModuleImpl::onContextReady() {
         try { m_config = json::parse(f); } catch (...) { m_config = json::object(); }
         if (!m_config.is_object()) m_config = json::object();
     }
-    loadCallers();
-}
-
-// Absent file: the wallet core alone. Unreadable file: nobody, so a typo never opens the door.
-void ZebradModuleImpl::loadCallers() {
-    m_callerModules = {kDefaultCaller};
-    m_allowHost = false;
-    std::ifstream f(fs::path(m_persistDir) / "callers.json");
-    if (!f) return;
-    m_callerModules.clear();
-    const json c = json::parse(f, nullptr, false);
-    if (!c.is_object()) return;
-    std::vector<std::string> modules;
-    bool allowHost = false;
-    for (auto& [k, v] : c.items()) {
-        if (k == "modules" && v.is_array()) {
-            for (const json& m : v) {
-                if (!m.is_string()) return;
-                modules.push_back(m.get<std::string>());
-            }
-        } else if (k == "allowHost" && v.is_boolean()) {
-            allowHost = v.get<bool>();
-        } else {
-            return;
-        }
-    }
-    m_callerModules = std::move(modules);
-    m_allowHost = allowHost;
 }
 
 // Read on every regtest call: a desk that depends on this module writes the file after it loads.
+// The activationHeights setting, when it holds any, replaces the file.
 void ZebradModuleImpl::loadRegtest() {
     m_regtestHeights.clear();
     m_regtestError.clear();
     m_regtest = false;
     if (m_persistDir.empty()) return;
+    if (m_config.contains("regtest") && m_config["regtest"].is_object()) {
+        const json heights = m_config["regtest"].value("activationHeights", json::object());
+        if (heights.is_object() && !heights.empty()) {
+            m_regtest = true;
+            m_regtestError = parseHeights(heights, "activationHeights", m_regtestHeights);
+            return;
+        }
+    }
     const fs::path path = fs::path(m_persistDir) / "regtest.json";
     std::error_code ec;
     m_regtest = fs::exists(path, ec);
     if (!m_regtest) return;
     std::ifstream f(path);
-    const json h = json::parse(f, nullptr, false);
-    if (!h.is_object()) { m_regtestError = "regtest.json is not a JSON object"; return; }
-    for (auto it = h.begin(); it != h.end(); ++it) {
-        const char* zebraKey = nullptr;
-        for (const auto& [ours, theirs] : kUpgradeKeys)
-            if (it.key() == ours) zebraKey = theirs;
-        if (!zebraKey) { m_regtestError = "regtest.json: unknown upgrade " + it.key(); break; }
-        if (it->is_null()) continue;
-        if (!it->is_number_unsigned() || it->get<uint64_t>() > UINT32_MAX) {
-            m_regtestError = "regtest.json: " + it.key() + " must be a height or null";
-            break;
-        }
-        m_regtestHeights.emplace_back(zebraKey, it->get<uint32_t>());
-    }
+    m_regtestError = parseHeights(json::parse(f, nullptr, false), "regtest.json", m_regtestHeights);
 }
 
 bool ZebradModuleImpl::knownNetwork(const std::string& network) const {
@@ -198,7 +190,10 @@ LogosMap ZebradModuleImpl::defaultConfig(const std::string& network) {
 }
 
 json ZebradModuleImpl::defaultsFor(const std::string& network) const {
-    if (!knownNetwork(network)) return json::object();
+    return knownNetwork(network) ? networkDefaults(network) : json::object();
+}
+
+json ZebradModuleImpl::networkDefaults(const std::string& network) const {
     // Zebra listens on every interface by default; a regtest chain has no one to listen to.
     const char* listen = network == "mainnet" ? "[::]:8233"
                        : network == "testnet" ? "[::]:18233" : "127.0.0.1:18344";
@@ -211,7 +206,10 @@ json ZebradModuleImpl::defaultsFor(const std::string& network) const {
         {"logFilter", "info"},
     };
     // Where `generate` pays its coinbase; mainnet and testnet are mined by others.
-    if (network == "regtest") d["minerAddress"] = "";
+    if (network == "regtest") {
+        d["minerAddress"] = "";
+        d["activationHeights"] = json::object();
+    }
     return d;
 }
 
@@ -220,7 +218,7 @@ json ZebradModuleImpl::settingsFor(const std::string& network) {
     json s = defaultsFor(network);
     if (m_config.contains(network) && m_config[network].is_object())
         for (auto& [k, v] : m_config[network].items())
-            if (s.contains(k) && (s[k].is_number() ? v.is_number_integer() : v.is_string())) s[k] = v;
+            if (s.contains(k) && sameType(s[k], v)) s[k] = v;
     return s;
 }
 
@@ -234,14 +232,21 @@ StdLogosResult ZebradModuleImpl::configure(const std::string& network, const Log
     if (!config.is_object()) return fail("config must be an object");
     std::lock_guard<std::mutex> lock(m_mutex);
     if (network == "regtest") loadRegtest();
-    if (!knownNetwork(network)) return fail("unknown network: " + network);
-    const json defaults = defaultsFor(network);
+    // Naming heights is what brings regtest into being, with or without regtest.json.
+    const bool declaresRegtest = network == "regtest" && config.contains("activationHeights")
+        && config["activationHeights"].is_object() && !config["activationHeights"].empty();
+    if (!knownNetwork(network) && !declaresRegtest) return fail("unknown network: " + network);
+    const json defaults = networkDefaults(network);
     for (auto& [k, v] : config.items()) {
-        if (k == "minerAddress" && network != "regtest") return fail("minerAddress is for regtest only");
+        if ((k == "minerAddress" || k == "activationHeights") && network != "regtest")
+            return fail(k + " is for regtest only");
         if (!defaults.contains(k)) return fail("unknown setting: " + k);
-        // nlohmann types a parsed 25 as unsigned and a negative as signed.
-        const bool ok = defaults[k].is_number() ? v.is_number_integer() : v.is_string();
-        if (!ok) return fail("wrong type for " + k);
+        if (!sameType(defaults[k], v)) return fail("wrong type for " + k);
+        if (k == "activationHeights") {
+            std::vector<std::pair<std::string, uint32_t>> heights;
+            const std::string why = parseHeights(v, k, heights);
+            if (!why.empty()) return fail(why);
+        }
         if (k == "peersetInitialTargetSize" && v.get<int64_t>() < 1)
             return fail("peersetInitialTargetSize must be at least 1");
         if ((k == "cacheDir" || k == "listenAddr" || k == "logFilter") && v.get<std::string>().empty())
@@ -251,6 +256,7 @@ StdLogosResult ZebradModuleImpl::configure(const std::string& network, const Log
     if (!stored.is_object()) stored = json::object();
     for (auto& [k, v] : config.items()) stored[k] = v;
     persist();
+    if (network == "regtest") loadRegtest();
     return {true, settingsFor(network)};
 }
 
@@ -277,6 +283,8 @@ std::string ZebradModuleImpl::zebradToml(const std::string& network, const json&
         for (const auto& [key, height] : m_regtestHeights) t += key + " = " + std::to_string(height) + "\n";
     }
     t += "\n[state]\ncache_dir = " + tomlString(cacheDir) + "\n";
+    // A regtest chain has no peers to fetch lost blocks from, so each is saved as it is accepted.
+    if (network == "regtest") t += "debug_skip_non_finalized_state_backup_task = true\n";
     if (network == "regtest" && !s["minerAddress"].get<std::string>().empty())
         t += "\n[mining]\nminer_address = " + tomlString(s["minerAddress"].get<std::string>()) + "\n";
     if (!lwd.empty() || !rpc.empty()) {
@@ -414,16 +422,7 @@ LogosMap ZebradModuleImpl::status() {
     return decorate(std::move(st), at, sampled);
 }
 
-bool ZebradModuleImpl::admitted() {
-    const logos::LogosCaller caller = logos::currentCaller();
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (caller.isHost()) return m_allowHost;
-    if (!caller.isModule() || caller.name.empty()) return false;
-    return std::find(m_callerModules.begin(), m_callerModules.end(), caller.name) != m_callerModules.end();
-}
-
 std::string ZebradModuleImpl::grpc(const std::string& path, const std::string& bodyBase64) {
-    if (!admitted()) return refusal("not authorized");
     if (m_unloading) return refusal("unloading");
     if (path.size() < 2 || path[0] != '/') return refusal("path must be a full gRPC path");
     std::vector<uint8_t> body;
@@ -436,6 +435,11 @@ std::string ZebradModuleImpl::grpc(const std::string& path, const std::string& b
     std::string encoded = out ? base64Encode(out, outLen) : "";
     if (out) ZEBRAD_free_bytes(out, outLen);
     return json{{"ok", true}, {"status", status}, {"message", message}, {"body", std::move(encoded)}}.dump();
+}
+
+std::string ZebradModuleImpl::rpc(const std::string& method, const std::string& paramsJson) {
+    if (m_unloading) return rpcRefusal(-9, "unloading");
+    return takeString(ZEBRAD_rpc(method.c_str(), paramsJson.empty() ? nullptr : paramsJson.c_str()));
 }
 
 // Reads backwards from the end, so a long-running node's log costs only the tail.
