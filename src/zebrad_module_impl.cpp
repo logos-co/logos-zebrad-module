@@ -131,7 +131,6 @@ void ZebradModuleImpl::onContextReady() {
         if (!m_config.is_object()) m_config = json::object();
     }
     loadCallers();
-    loadRegtest();
 }
 
 // Absent file: the wallet core alone. Unreadable file: nobody, so a typo never opens the door.
@@ -161,9 +160,12 @@ void ZebradModuleImpl::loadCallers() {
     m_allowHost = allowHost;
 }
 
+// Read on every regtest call: a desk that depends on this module writes the file after it loads.
 void ZebradModuleImpl::loadRegtest() {
     m_regtestHeights.clear();
     m_regtestError.clear();
+    m_regtest = false;
+    if (m_persistDir.empty()) return;
     const fs::path path = fs::path(m_persistDir) / "regtest.json";
     std::error_code ec;
     m_regtest = fs::exists(path, ec);
@@ -191,6 +193,7 @@ bool ZebradModuleImpl::knownNetwork(const std::string& network) const {
 
 LogosMap ZebradModuleImpl::defaultConfig(const std::string& network) {
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (network == "regtest") loadRegtest();
     return defaultsFor(network);
 }
 
@@ -223,12 +226,14 @@ json ZebradModuleImpl::settingsFor(const std::string& network) {
 
 LogosMap ZebradModuleImpl::getConfig(const std::string& network) {
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (network == "regtest") loadRegtest();
     return settingsFor(network);
 }
 
 StdLogosResult ZebradModuleImpl::configure(const std::string& network, const LogosMap& config) {
     if (!config.is_object()) return fail("config must be an object");
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (network == "regtest") loadRegtest();
     if (!knownNetwork(network)) return fail("unknown network: " + network);
     const json defaults = defaultsFor(network);
     for (auto& [k, v] : config.items()) {
@@ -289,6 +294,7 @@ StdLogosResult ZebradModuleImpl::start(const std::string& network) {
     json options;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        if (network == "regtest") loadRegtest();
         if (!knownNetwork(network)) return fail("unknown network: " + network);
         if (m_persistDir.empty()) return fail("no persistence path yet");
         if (network == "regtest" && !m_regtestError.empty()) return fail(m_regtestError);
