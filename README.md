@@ -5,7 +5,7 @@
 subprocess is spawned: the node lives and dies with this module. The Zcash wallet reaches it
 over Logos IPC, through `grpc()`, rather than through a port.
 
-Linux, macOS and Windows. Windows builds are cross builds from x86_64-linux; there the
+Linux (x86_64 and arm64), macOS and Windows. Windows builds are cross builds from x86_64-linux; there the
 plugin ships beside `zebrad_c.dll`, which imports GCC's runtime (libstdc++, libgcc_s,
 mcfgthread) from the host, as every Logos module built with MinGW does.
 
