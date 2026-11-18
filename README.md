@@ -5,7 +5,7 @@
 subprocess is spawned: the node lives and dies with this module. The Zcash wallet reaches it
 over Logos IPC, through `grpc()`, rather than through a port.
 
-Linux, macOS and Windows. Windows builds are cross builds from x86_64-linux; there the
+Linux (x86_64 and arm64), macOS and Windows. Windows builds are cross builds from x86_64-linux; there the
 plugin ships beside `zebrad_c.dll`, which imports GCC's runtime (libstdc++, libgcc_s,
 mcfgthread) from the host, as every Logos module built with MinGW does.
 
@@ -72,8 +72,8 @@ Networks are `mainnet` and `testnet`, plus `regtest` when the instance directory
 `regtest.json`, in the wallet core's format:
 `{"overwinter":1,"sapling":1,"blossom":1,"heartwood":1,"canopy":1,"nu5":1,"nu6":1,"nu6_1":1,"nu6_2":1,"nu6_3":120,"nu7":null}`.
 Its heights become Zebra's `[network.testnet_parameters.activation_heights]` (`NU5`,
-`"NU6.1"`, `"NU6.3"` and so on; `null` leaves an upgrade inactive). The file is read when
-the module loads.
+`"NU6.1"`, `"NU6.3"` and so on; `null` leaves an upgrade inactive). The file is read on each
+regtest call, so it can be written after the module loads.
 
 ## Why IPC, not a port
 
