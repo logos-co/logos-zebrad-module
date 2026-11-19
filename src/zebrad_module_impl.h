@@ -15,14 +15,14 @@
 #include <logos_result.h>
 
 /// A Zcash node (Zebra) running in-process through libzebrad_c. One node at a time; its
-/// lifetime is this module's lifetime. The wallet reaches it through grpc(), not a port.
+/// lifetime is this module's lifetime. Callers reach it through grpc() and rpc(), not a port.
 class ZebradModuleImpl : public LogosModuleContext {
 public:
     ZebradModuleImpl();
     ~ZebradModuleImpl();
 
     /// Merge `config` into the stored settings for `network` (mainnet|testnet, and regtest
-    /// when the instance directory holds regtest.json).
+    /// once `activationHeights` or regtest.json in the instance directory names its upgrades).
     StdLogosResult configure(const std::string& network, const LogosMap& config);
 
     /// Stored settings for `network`, with defaults filled in.
@@ -53,8 +53,12 @@ public:
     /// One call into Zebra's lightwalletd CompactTxStreamer service, in memory.
     /// `path` is the full gRPC path; the body is gRPC-framed, base64. Returns
     /// {"ok":true,"status":n,"message":s,"body":base64} or {"ok":false,"error":s}.
-    /// Only zcash_wallet_core_module may call it, unless callers.json says otherwise.
     std::string grpc(const std::string& path, const std::string& bodyBase64);
+
+    /// One call into Zebra's JSON-RPC, in memory. `paramsJson` is a JSON array or object, or
+    /// "" for none. Returns {"result":...,"error":null} or
+    /// {"result":null,"error":{"code":n,"message":s}}.
+    std::string rpc(const std::string& method, const std::string& paramsJson);
 
     /// The last `lines` lines of the node's log.
     std::string logTail(int64_t lines);
@@ -70,11 +74,10 @@ protected:
 private:
     bool knownNetwork(const std::string& network) const;
     nlohmann::json defaultsFor(const std::string& network) const;
+    nlohmann::json networkDefaults(const std::string& network) const;
     nlohmann::json settingsFor(const std::string& network);
     std::string zebradToml(const std::string& network, const nlohmann::json& s) const;
     void persist();
-    bool admitted();
-    void loadCallers();
     void loadRegtest();
     void pollLoop();
     void refresh(const char* forceState = nullptr);
@@ -85,12 +88,10 @@ private:
     std::string m_persistDir;               // guarded by m_mutex
     std::string m_logFile;                  // guarded by m_mutex
     nlohmann::json m_config = nlohmann::json::object();  // guarded by m_mutex
-    // regtest.json mapped to Zebra's activation-height keys; regtest exists only with the file.
+    // Regtest's upgrades mapped to Zebra's activation-height keys; regtest exists only with them.
     bool m_regtest = false;                 // guarded by m_mutex
     std::string m_regtestError;             // guarded by m_mutex
     std::vector<std::pair<std::string, uint32_t>> m_regtestHeights;  // guarded by m_mutex
-    std::vector<std::string> m_callerModules;  // guarded by m_mutex
-    bool m_allowHost = false;               // guarded by m_mutex
 
     // ZEBRAD_status_json can wait on the node while it starts, so a thread samples it and
     // status() serves the last sample.
